@@ -7,20 +7,20 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 import os
- 
+
 app = FastAPI(title="BetEdge API", version="2.0.0")
- 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
- 
+
 FD_API_KEY       = os.getenv("FD_API_KEY", "")        # football-data.org (grátis)
 NEWS_API_KEY     = os.getenv("NEWS_API_KEY", "")       # newsapi.org (grátis)
-RAPID_API_KEY    = os.getenv("RAPID_API_KEY", "")      # rapidapi.com → api-football (grátis 100/dia)
- 
+RAPID_API_KEY    = os.getenv("RAPID_API_KEY", "")      # api-football.com (grátis 100/dia — registo em api-football.com)
+
 # ── IDs das ligas no API-Football ──
 APIFOOTBALL_LEAGUE_IDS = {
     "portugal 1":        94,
@@ -66,7 +66,7 @@ APIFOOTBALL_LEAGUE_IDS = {
     "liga das nações":   1015,
     "liga das nações":   1015,
 }
- 
+
 # ── football-data.org — só grandes ligas ──
 FD_LEAGUE_MAP = {
     "espanha 1":         "PD",
@@ -92,17 +92,17 @@ FD_LEAGUE_MAP = {
     "europeu":           "EC",
     "mundial":           "WC",
 }
- 
+
 NATIONAL_COMPS = [
     "europeu", "mundial", "liga das nações", "taça das nações",
     "euro", "world cup", "nations league"
 ]
- 
+
 def is_national(liga: str) -> bool:
     l = liga.lower()
     return any(k in l for k in NATIONAL_COMPS)
- 
- 
+
+
 # ════════════════════════════════════════
 # HEALTH
 # ════════════════════════════════════════
@@ -114,10 +114,10 @@ async def health():
         "timestamp": datetime.now().isoformat(),
         "fd_key":      "✅" if FD_API_KEY    else "❌ em falta",
         "news_key":    "✅" if NEWS_API_KEY  else "❌ em falta",
-        "rapid_key":   "✅" if RAPID_API_KEY else "❌ em falta (opcional mas recomendado)",
+        "rapid_key":   "✅ api-football.com" if RAPID_API_KEY else "❌ em falta — regista em api-football.com (grátis)",
     }
- 
- 
+
+
 # ════════════════════════════════════════
 # xG
 # ════════════════════════════════════════
@@ -130,7 +130,7 @@ async def get_xg(
     league_key = league.lower().strip()
     xg_home = xg_away = xg_home_ht = xg_away_ht = None
     source = "estimativa"
- 
+
     # 1. Understat
     understat_map = {
         "espanha 1": "La_liga", "espanha 2": "La_liga",
@@ -148,7 +148,7 @@ async def get_xg(
             if xg_home: source = "understat"
         except Exception as e:
             print(f"Understat: {e}")
- 
+
     # 2. API-Football xG (se tiver RAPID_API_KEY)
     if xg_home is None and RAPID_API_KEY:
         try:
@@ -156,7 +156,7 @@ async def get_xg(
             if xg_home: source = "api-football"
         except Exception as e:
             print(f"API-Football xG: {e}")
- 
+
     # 3. FBRef
     if xg_home is None:
         try:
@@ -167,16 +167,16 @@ async def get_xg(
                 source = "fbref"
         except Exception as e:
             print(f"FBRef: {e}")
- 
+
     # 4. Média histórica por liga
     if xg_home is None:
         xg_home, xg_away = estimate_xg_from_league(league_key)
         xg_home_ht = round(xg_home * 0.44, 2)
         xg_away_ht = round(xg_away * 0.44, 2)
         source = "média_liga"
- 
+
     news = await fetch_news(home, away)
- 
+
     return {
         "home": home, "away": away,
         "xg_home": xg_home, "xg_away": xg_away,
@@ -184,8 +184,8 @@ async def get_xg(
         "source": source, "news": news,
         "timestamp": datetime.now().isoformat()
     }
- 
- 
+
+
 async def fetch_understat_xg(home, away, league):
     url = f"https://understat.com/league/{league}/2024"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -202,8 +202,8 @@ async def fetch_understat_xg(home, away, league):
             return (round(home_xg["xg_avg"], 2), round(away_xg["xg_avg"], 2),
                     round(home_xg["xg_avg"]*0.44, 2), round(away_xg["xg_avg"]*0.44, 2))
     return None, None, None, None
- 
- 
+
+
 def extract_team_xg(teams_data, team_name):
     team_name_lower = team_name.lower()
     best_match = None
@@ -219,59 +219,58 @@ def extract_team_xg(teams_data, team_name):
     xg_vals = [float(g.get("xG", 0)) for g in history if g.get("xG")]
     if not xg_vals: return None
     return {"xg_avg": sum(xg_vals) / len(xg_vals)}
- 
- 
+
+
 async def fetch_apifootball_xg(home, away, league_key):
     """API-Football — xG das últimas partidas de cada equipa."""
     league_id = APIFOOTBALL_LEAGUE_IDS.get(league_key)
     if not league_id: return None, None, None, None
- 
+
     headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+        "x-apisports-key": RAPID_API_KEY,
     }
     season = datetime.now().year if datetime.now().month >= 7 else datetime.now().year - 1
- 
+
     async with httpx.AsyncClient(timeout=15) as client:
         # Buscar stats das equipas
         home_xg = await apifootball_team_xg(client, headers, home, league_id, season)
         await asyncio.sleep(0.5)
         away_xg = await apifootball_team_xg(client, headers, away, league_id, season)
- 
+
     if home_xg and away_xg:
         return (round(home_xg, 2), round(away_xg, 2),
                 round(home_xg*0.44, 2), round(away_xg*0.44, 2))
     return None, None, None, None
- 
- 
+
+
 async def apifootball_team_xg(client, headers, team_name, league_id, season):
     """Busca xG médio por jogo de uma equipa via API-Football."""
     try:
         # Procurar ID da equipa
-        url = "https://api-football-v1.p.rapidapi.com/v3/teams"
+        url = "https://v3.football.api-sports.io/teams"
         r = await client.get(url, headers=headers, params={"search": team_name})
         data = r.json()
         teams = data.get("response", [])
         if not teams: return None
         team_id = teams[0]["team"]["id"]
- 
+
         # Buscar estatísticas
-        url2 = "https://api-football-v1.p.rapidapi.com/v3/teams/statistics"
+        url2 = "https://v3.football.api-sports.io/teams/statistics"
         r2 = await client.get(url2, headers=headers, params={
             "team": team_id, "league": league_id, "season": season
         })
         stats = r2.json().get("response", {})
         fixtures_played = stats.get("fixtures", {}).get("played", {}).get("total", 0)
         goals_for = stats.get("goals", {}).get("for", {}).get("total", {}).get("total", 0)
- 
+
         if fixtures_played > 0:
             # API-Football free não dá xG direto — usar média de golos como proxy
             return goals_for / fixtures_played
     except Exception as e:
         print(f"API-Football team xG: {e}")
     return None
- 
- 
+
+
 async def fetch_fbref_xg(home, away):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; BetEdgeBot/1.0)"}
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
@@ -281,8 +280,8 @@ async def fetch_fbref_xg(home, away):
     if home_xg and away_xg:
         return round(home_xg, 2), round(away_xg, 2)
     return None, None
- 
- 
+
+
 async def fbref_team_xg(client, team, headers):
     try:
         url = f"https://fbref.com/en/search/search.fcgi?search={team.replace(' ', '+')}&pid=search"
@@ -295,8 +294,8 @@ async def fbref_team_xg(client, team, headers):
             if games > 0: return total_xg / games
     except: pass
     return None
- 
- 
+
+
 def estimate_xg_from_league(league_key):
     defaults = {
         "portugal 1": (1.45, 1.05), "portugal 2": (1.35, 0.95),
@@ -316,8 +315,8 @@ def estimate_xg_from_league(league_key):
         "liga das nações": (1.28, 0.98),
     }
     return defaults.get(league_key, (1.45, 1.05))
- 
- 
+
+
 # ════════════════════════════════════════
 # NOTÍCIAS
 # ════════════════════════════════════════
@@ -330,8 +329,8 @@ async def fetch_news(home, away):
         try: news = await fetch_google_news(home, away)
         except Exception as e: print(f"Google News: {e}")
     return news[:6]
- 
- 
+
+
 async def fetch_newsapi(home, away):
     params = {
         "q": f'"{home}" OR "{away}" lesão suspensão injury suspension',
@@ -343,8 +342,8 @@ async def fetch_newsapi(home, away):
         r = await client.get("https://newsapi.org/v2/everything", params=params)
         articles = r.json().get("articles", [])
     return [classify_news(a["title"], a.get("source", {}).get("name", "")) for a in articles if a.get("title")]
- 
- 
+
+
 async def fetch_google_news(home, away):
     query = f"{home} {away} lesão OR injury OR suspenso OR suspended"
     url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=pt-PT&gl=PT&ceid=PT:pt"
@@ -352,8 +351,8 @@ async def fetch_google_news(home, away):
         r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
     titles = re.findall(r'<title><!\[CDATA\[(.+?)\]\]></title>', r.text)[1:6]
     return [classify_news(t, "Google News") for t in titles]
- 
- 
+
+
 def classify_news(title, source):
     tl = title.lower()
     if any(k in tl for k in ["lesion","lesão","injury","injured","baixa","out","dúvida","muscular"]):
@@ -363,8 +362,8 @@ def classify_news(title, source):
     else:
         t = "form"
     return {"type": t, "text": title[:80], "source": source}
- 
- 
+
+
 # ════════════════════════════════════════
 # RESULTADO — API-Football + football-data.org
 # ════════════════════════════════════════
@@ -378,27 +377,26 @@ async def get_result(
         raise HTTPException(400, "Formato: 'Casa vs Fora'")
     home_team, away_team = parts[0].strip(), parts[1].strip()
     search_date = date or datetime.now().strftime("%Y-%m-%d")
- 
+
     # 1. Tentar API-Football (cobre Liga Portugal e todas as outras)
     if RAPID_API_KEY:
         result = await fetch_result_apifootball(home_team, away_team, search_date)
         if result: return result
- 
+
     # 2. Fallback: football-data.org (grandes ligas)
     if FD_API_KEY:
         result = await fetch_result_fd(home_team, away_team, search_date)
         if result: return result
- 
+
     raise HTTPException(404, f"Resultado não encontrado para '{match}'. Verifica se o jogo já terminou.")
- 
- 
+
+
 async def fetch_result_apifootball(home_team, away_team, search_date):
     """API-Football — cobre TODAS as ligas incluindo Liga Portugal."""
     if not RAPID_API_KEY: return None
- 
+
     headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+        "x-apisports-key": RAPID_API_KEY,
     }
     # Pesquisar por data (±1 dia para compensar fusos horários)
     date_obj = datetime.fromisoformat(search_date)
@@ -407,12 +405,12 @@ async def fetch_result_apifootball(home_team, away_team, search_date):
         search_date,
         (date_obj + timedelta(days=1)).strftime("%Y-%m-%d"),
     ]
- 
+
     async with httpx.AsyncClient(timeout=20) as client:
         for d in dates_to_try:
             try:
                 r = await client.get(
-                    "https://api-football-v1.p.rapidapi.com/v3/fixtures",
+                    "https://v3.football.api-sports.io/fixtures",
                     headers=headers,
                     params={"date": d, "status": "FT-AET-PEN"}  # Jogos terminados
                 )
@@ -442,8 +440,8 @@ async def fetch_result_apifootball(home_team, away_team, search_date):
             except Exception as e:
                 print(f"API-Football result ({d}): {e}")
     return None
- 
- 
+
+
 async def fetch_result_fd(home_team, away_team, search_date):
     """football-data.org — fallback para grandes ligas."""
     headers = {"X-Auth-Token": FD_API_KEY}
@@ -451,7 +449,7 @@ async def fetch_result_fd(home_team, away_team, search_date):
     date_from = (date_obj - timedelta(days=2)).strftime("%Y-%m-%d")
     date_to   = (date_obj + timedelta(days=1)).strftime("%Y-%m-%d")
     leagues = ["PL","PD","BL1","SA","FL1","DED","CL","EL","ECNL","ELC","SD","SB","FL2","BL2","BSA"]
- 
+
     async with httpx.AsyncClient(timeout=15) as client:
         for league in leagues:
             try:
@@ -483,8 +481,8 @@ async def fetch_result_fd(home_team, away_team, search_date):
             except Exception as e:
                 print(f"FD {league}: {e}")
     return None
- 
- 
+
+
 # ════════════════════════════════════════
 # xG REAL PÓS-JOGO — API-Football
 # ════════════════════════════════════════
@@ -493,19 +491,18 @@ async def get_xg_result(fixture_id: int = Query(...)):
     """Busca xG real de um jogo já terminado via API-Football."""
     if not RAPID_API_KEY:
         raise HTTPException(503, "RAPID_API_KEY não configurada")
- 
+
     headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+        "x-apisports-key": RAPID_API_KEY,
     }
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
-            "https://api-football-v1.p.rapidapi.com/v3/fixtures/statistics",
+            "https://v3.football.api-sports.io/fixtures/statistics",
             headers=headers,
             params={"fixture": fixture_id}
         )
         stats = r.json().get("response", [])
- 
+
     xg_home = xg_away = None
     for team_stats in stats:
         for stat in team_stats.get("statistics", []):
@@ -514,10 +511,10 @@ async def get_xg_result(fixture_id: int = Query(...)):
                     xg_home = stat["value"]
                 else:
                     xg_away = stat["value"]
- 
+
     return {"xg_home": xg_home, "xg_away": xg_away, "fixture_id": fixture_id}
- 
- 
+
+
 # ════════════════════════════════════════
 # FIXTURES
 # ════════════════════════════════════════
@@ -525,17 +522,16 @@ async def get_xg_result(fixture_id: int = Query(...)):
 async def get_fixtures(days_ahead: int = 0):
     target_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
     all_fixtures = []
- 
+
     # API-Football (cobre tudo)
     if RAPID_API_KEY:
         headers = {
-            "X-RapidAPI-Key": RAPID_API_KEY,
-            "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+            "x-apisports-key": RAPID_API_KEY,
         }
         async with httpx.AsyncClient(timeout=20) as client:
             try:
                 r = await client.get(
-                    "https://api-football-v1.p.rapidapi.com/v3/fixtures",
+                    "https://v3.football.api-sports.io/fixtures",
                     headers=headers,
                     params={"date": target_date}
                 )
@@ -551,7 +547,7 @@ async def get_fixtures(days_ahead: int = 0):
                     })
             except Exception as e:
                 print(f"Fixtures API-Football: {e}")
- 
+
     # Fallback football-data.org
     if not all_fixtures and FD_API_KEY:
         headers = {"X-Auth-Token": FD_API_KEY}
@@ -575,5 +571,5 @@ async def get_fixtures(days_ahead: int = 0):
                         })
                     await asyncio.sleep(0.3)
                 except: continue
- 
+
     return {"fixtures": all_fixtures, "date": target_date, "count": len(all_fixtures)}
