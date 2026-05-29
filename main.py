@@ -424,17 +424,41 @@ async def fetch_result_apifootball(home_team, away_team, search_date):
                         score = f["score"]
                         # xG se disponível
                         xg_home = f.get("statistics", [{}])[0].get("statistics", [])
+                        fixture_id = f["fixture"]["id"]
+                        ht = score.get("halftime", {})
+                        # Tentar buscar xG das estatísticas do jogo
+                        xg_home_real = xg_away_real = None
+                        try:
+                            r_stats = await client.get(
+                                "https://v3.football.api-sports.io/fixtures/statistics",
+                                headers=headers,
+                                params={"fixture": fixture_id, "type": "Expected Goals"}
+                            )
+                            stats_data = r_stats.json().get("response", [])
+                            for team_stat in stats_data:
+                                for stat in team_stat.get("statistics", []):
+                                    if stat.get("type") == "Expected Goals" and stat.get("value"):
+                                        val = float(stat["value"])
+                                        if xg_home_real is None:
+                                            xg_home_real = val
+                                        else:
+                                            xg_away_real = val
+                        except Exception as xe:
+                            print(f"xG stats: {xe}")
+
                         return {
                             "home": f["teams"]["home"]["name"],
                             "away": f["teams"]["away"]["name"],
-                            "home_goals":    goals.get("home", 0),
-                            "away_goals":    goals.get("away", 0),
-                            "home_goals_ht": score.get("halftime", {}).get("home", 0),
-                            "away_goals_ht": score.get("halftime", {}).get("away", 0),
+                            "home_goals":     goals.get("home", 0),
+                            "away_goals":     goals.get("away", 0),
+                            "home_goals_ht":  ht.get("home") if ht.get("home") is not None else None,
+                            "away_goals_ht":  ht.get("away") if ht.get("away") is not None else None,
+                            "xg_home":        xg_home_real,
+                            "xg_away":        xg_away_real,
                             "status": f["fixture"]["status"]["long"],
                             "date":   f["fixture"]["date"][:10],
                             "source": "api-football",
-                            "fixture_id": f["fixture"]["id"],
+                            "fixture_id": fixture_id,
                         }
                 await asyncio.sleep(0.3)
             except Exception as e:
